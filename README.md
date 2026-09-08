@@ -4,6 +4,15 @@ Run any number of Claude Desktop accounts on one Mac at the same time, each
 with its own Dock icon and its own login — without breaking when Claude
 Desktop updates, and without switching macOS user profiles.
 
+> **Unofficial project. Not affiliated with, endorsed by, or supported by
+> Anthropic.** "Claude" and "Anthropic" are trademarks of Anthropic PBC, used
+> here only to describe what this tool operates on. It works by duplicating
+> and re-signing your own installed copy of Claude Desktop; it ships no
+> Anthropic code, branding, or assets. Anthropic may add multi-account
+> support to Claude Desktop itself one day, which would be the more robust
+> answer — worth checking `support.claude.com` occasionally. Use at your own
+> risk.
+
 ## How it survives updates
 
 Each "profile" is a duplicate of `/Applications/Claude.app` with a unique
@@ -80,10 +89,6 @@ work on the same files — just avoid both editing the same file at once.
 
 ## Known limitations / things to check on your machine
 
-- **This is an unofficial workaround**, not a supported Anthropic feature.
-  Multi-account support inside Claude Desktop itself may ship eventually and
-  would be the more robust long-term answer — worth checking
-  `support.claude.com` occasionally.
 - **Gatekeeper / first run**: ad-hoc signed apps sometimes need a right-click
   → Open the very first time, even after `xattr -cr`. If macOS refuses to
   open a profile, try that, or check `system.log` for a Gatekeeper denial.
@@ -134,12 +139,16 @@ python3 -m unittest discover -s tests -v   # engine tests (macOS, needs clang)
 ## Uninstall
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.moreclaude.watcher.plist
-rm ~/Library/LaunchAgents/com.moreclaude.watcher.plist
-rm -rf "/Applications/More Claude.app"
-rm -rf ~/Library/Application\ Support/MoreClaude
-rm -rf ~/Library/Logs/MoreClaude
-rm -rf ~/Applications/MoreClaude
-# Add --purge on each profile beforehand if you also want login data removed:
-# rm -rf ~/Library/Application\ Support/MoreClaudeProfiles
+./uninstall.sh
 ```
+
+It quits the app and any open profiles, unloads the watcher, unregisters the
+bundles from Launch Services, and removes everything it installed. **Your
+profile logins are kept** — re-adding a profile with the same ID restores that
+session. Options:
+
+| Flag | Effect |
+|---|---|
+| `--purge` | Also delete every profile's login data |
+| `--dry-run` | List what would be removed, change nothing |
+| `--yes` | Skip the confirmation prompt |

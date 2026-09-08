@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -404,6 +406,63 @@ class ValidationTests(EngineTestCase):
     def test_running_check_survives_a_name_with_metacharacters(self):
         self.engine("add", "--id", "rx", "--name", "Claude (v2) [beta]")
         self.assertFalse(mc.is_app_running(self.bundle("Claude (v2) [beta]")))
+
+
+class ConfigTests(EngineTestCase):
+
+    def test_config_is_never_visible_half_written(self):
+        """The watcher rebuilds in the background while the app or the CLI
+        writes config.json. Writing in place truncates the file first, so a
+        concurrent reader sees an empty config and crashes — which is exactly
+        what happened in practice. Slow the write down and read the file from
+        another thread while it is in flight."""
+        self.engine("add", "--id", "work", "--name", "Claude Work")
+        config = self.read_config()
+
+        observed = []
+
+        def reader():
+            time.sleep(0.15)          # land inside the write
+            try:
+                with open(self.config_path) as f:
+                    observed.append(f.read())
+            except FileNotFoundError:
+                observed.append("")
+
+        original_dump = json.dump
+
+        def slow_dump(obj, fp, **kwargs):
+            time.sleep(0.4)
+            return original_dump(obj, fp, **kwargs)
+
+        json.dump = slow_dump
+        self.addCleanup(lambda: setattr(json, "dump", original_dump))
+        watcher = threading.Thread(target=reader)
+        watcher.start()
+        try:
+            mc.save_config(config)
+        finally:
+            json.dump = original_dump
+            watcher.join()
+
+        self.assertEqual(len(observed), 1)
+        self.assertTrue(observed[0].strip(),
+                        "a reader saw config.json empty mid-write")
+        json.loads(observed[0])       # and it was complete, parseable JSON
+
+    def test_saving_leaves_no_temp_files_behind(self):
+        self.engine("add", "--id", "work", "--name", "Claude Work")
+        self.engine("set", "--id", "work", "--name", "Claude Renamed")
+        leftovers = [n for n in os.listdir(os.path.dirname(self.config_path))
+                     if n.startswith(".config-")]
+        self.assertEqual(leftovers, [])
+
+    def test_corrupt_config_gives_a_clear_error_not_a_traceback(self):
+        with open(self.config_path, "w") as f:
+            f.write("{ not json")
+        output, code = self.engine("list")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not valid JSON", str(code))
 
 
 class ListingTests(EngineTestCase):

@@ -259,7 +259,7 @@ that's the point to convert it to a Swift package.
     <Profile Display Name>.app  # disposable, rebuilt on every master update
 
 ~/Library/LaunchAgents/
-    com.moreclaude.watcher.plist
+    com.moreclaude.watcher.plist          # removed by uninstall.sh
 
 ~/Library/Logs/MoreClaude/          # created 0700 by install.sh
     watcher.log

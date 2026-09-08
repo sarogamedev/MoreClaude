@@ -179,8 +179,13 @@ def load_config():
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         save_config(DEFAULT_CONFIG)
         return dict(DEFAULT_CONFIG)
-    with open(CONFIG_PATH) as f:
-        cfg = json.load(f)
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError as e:
+        sys.exit(f"{CONFIG_PATH} is not valid JSON ({e}). Fix or delete it; "
+                 "deleting it starts over with no profiles, and your login "
+                 "data is kept either way.")
 
     # config.json is hand-editable, so re-check it rather than trusting that
     # whatever is in there came from this tool.
@@ -194,9 +199,26 @@ def load_config():
 
 
 def save_config(cfg):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    """Write config.json atomically.
+
+    The watcher, the app and the CLI all read this file, and they run at the
+    same time — the watcher rebuilds in the background while you add a profile.
+    Writing in place truncates the file first, so a concurrent reader can see
+    an empty or half-written config and crash. Writing to a temp file in the
+    same directory and renaming means readers only ever see a complete file."""
+    directory = os.path.dirname(CONFIG_PATH)
+    os.makedirs(directory, exist_ok=True)
+    handle, temp_path = tempfile.mkstemp(dir=directory, prefix=".config-", suffix=".json")
+    try:
+        with os.fdopen(handle, "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, CONFIG_PATH)
+    except BaseException:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
 
 
 def find_profile(cfg, profile_id):
