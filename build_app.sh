@@ -7,16 +7,29 @@
 set -e
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST_DIR="${1:-$HERE/build}"
+
+UNIVERSAL=0
+DEST_DIR=""
+for arg in "$@"; do
+    case "$arg" in
+        --universal) UNIVERSAL=1 ;;
+        -h|--help)
+            echo "usage: build_app.sh [--universal] [destination-dir]"
+            echo "  --universal  build arm64 + x86_64 (for a release; slower)"
+            exit 0 ;;
+        *) DEST_DIR="$arg" ;;
+    esac
+done
+DEST_DIR="${DEST_DIR:-$HERE/build}"
 APP="$DEST_DIR/More Claude.app"
-VERSION="1.0.0"
+VERSION="$(tr -d "[:space:]" < "$HERE/VERSION")"
 # ContentUnavailableView and the two-parameter onChange are macOS 14 APIs.
 # Pin the deployment target so the built binary's minimum matches what
 # Info.plist advertises, rather than defaulting to whatever the build
 # machine happens to run.
 MIN_MACOS="14.0"
 # swiftc ignores MACOSX_DEPLOYMENT_TARGET, so the triple has to be explicit.
-SWIFT_TARGET="$(uname -m)-apple-macos$MIN_MACOS"
+HOST_TARGET="$(uname -m)-apple-macos$MIN_MACOS"
 
 if ! xcode-select -p >/dev/null 2>&1; then
     echo "Xcode Command Line Tools are required: xcode-select --install"
@@ -26,12 +39,40 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "==> Compiling More Claude"
-if ! swiftc -O -parse-as-library -target "$SWIFT_TARGET" \
+# A local build only has to run on this Mac; a release build has to run on
+# both Apple Silicon and Intel, so build each slice and lipo them together.
+if [ "$UNIVERSAL" -eq 1 ]; then
+    ARCHES="arm64 x86_64"
+    echo "==> Compiling More Claude (universal: $ARCHES)"
+else
+    ARCHES="$(uname -m)"
+    echo "==> Compiling More Claude ($ARCHES)"
+fi
+
+compile_slice() {
+    swiftc -O -parse-as-library -target "$1-apple-macos$MIN_MACOS" \
         "$HERE/MoreClaudeApp/Engine.swift" \
         "$HERE/MoreClaudeApp/Views.swift" \
         "$HERE/MoreClaudeApp/MoreClaudeApp.swift" \
-        -o "$WORK/MoreClaude"; then
+        -o "$2"
+}
+
+BUILD_OK=1
+SLICES=""
+for arch in $ARCHES; do
+    if ! compile_slice "$arch" "$WORK/MoreClaude-$arch"; then
+        BUILD_OK=0
+        break
+    fi
+    SLICES="$SLICES $WORK/MoreClaude-$arch"
+done
+
+if [ "$BUILD_OK" -eq 1 ]; then
+    # shellcheck disable=SC2086
+    lipo -create -output "$WORK/MoreClaude" $SLICES
+fi
+
+if [ "$BUILD_OK" -eq 0 ]; then
     echo ""
     echo "swiftc failed. If the errors mention 'redefinition of module SwiftBridging'"
     echo "or 'could not build module Foundation', the Command Line Tools install is"
@@ -74,7 +115,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> Drawing the app icon"
-swiftc -O -target "$SWIFT_TARGET" "$HERE/MoreClaudeApp/make_icon.swift" -o "$WORK/make_icon"
+# make_icon runs on this machine, so it only needs the host arch.
+swiftc -O -target "$HOST_TARGET" "$HERE/MoreClaudeApp/make_icon.swift" -o "$WORK/make_icon"
 "$WORK/make_icon" "$WORK/icon-master.png" >/dev/null
 
 ICONSET="$WORK/AppIcon.iconset"

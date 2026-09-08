@@ -41,6 +41,13 @@ every update.**
 ./install.sh
 ```
 
+There are prebuilt universal builds on the
+[releases page](https://github.com/sarogamedev/MoreClaude/releases), but
+installing from source is the better path: the download is ad-hoc signed and
+not notarized, so macOS quarantines it and you have to clear that by hand,
+and the prebuilt app doesn't set up the background update watcher. Building
+locally avoids both.
+
 This builds **More Claude.app** into `/Applications` (falling back to
 `~/Applications` if that isn't writable) and installs a LaunchAgent that
 watches for Claude Desktop updates in the background.
@@ -127,7 +134,13 @@ work on the same files — just avoid both editing the same file at once.
 ```bash
 python3 -m unittest discover -s tests -v   # engine tests (macOS, needs clang)
 ./build_app.sh                             # -> ./build/More Claude.app
+./build_app.sh --universal                 # arm64 + x86_64
+./make_release.sh                          # -> ./dist/ zip + SHA256SUMS
 ```
+
+`make_release.sh` runs the tests, builds universal, packages with `ditto` (a
+plain `zip` mangles the code signature), and verifies the signature survives a
+round trip through the archive.
 
 ## Building without installing
 
