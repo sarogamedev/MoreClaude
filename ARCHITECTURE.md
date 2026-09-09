@@ -286,6 +286,30 @@ Electron helper-resolution traps), the previous profile surviving a failed
 rebuild (the atomic swap), id/name validation, `bundle_path` containment, and
 `pgrep` regex escaping. Reintroducing any of those bugs fails the suite.
 
+## Exit codes and atomicity
+
+Command functions return `False` when they didn't do what was asked, and
+`main()` turns that into `sys.exit(1)`. (`watch` never returns, and `None` is
+treated as success.) This exists so the CLI is scriptable — stdout is for
+people, the exit status is for programs.
+
+`cmd_set` is the one place where config and disk can disagree, so it is
+written to be all-or-nothing when `--rebuild` is given:
+
+1. Resolve and validate every new value before writing anything.
+2. Pre-flight the running check, so the common case fails before the config
+   is touched at all.
+3. Apply and save.
+4. If the build then fails for any other reason, restore the previous values
+   and save again. This is only sound because builds are staged and swapped —
+   a failed build never modified the installed bundle, so reverting the config
+   genuinely returns both sides to their prior state.
+
+Without `--rebuild` the deferral is intentional: the config is the source of
+truth and the bundle is derived from it, so a recorded rename is applied by
+whichever build happens next (including the watcher's). `list --json` exposes
+this as `pending_rename`.
+
 ## Input validation
 
 `id` and `name` are the two values that become paths, and `id` additionally

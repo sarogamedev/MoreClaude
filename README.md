@@ -90,6 +90,18 @@ python3 "$MC" remove --id work [--purge]
 python3 "$MC" watch                   # what the LaunchAgent runs
 ```
 
+**Scripting.** Every command exits non-zero when it didn't do what was asked,
+so you can branch on the status rather than parsing output.
+
+`set --rebuild` is all-or-nothing: if the bundle can't be replaced — the
+profile is open, or the build fails — the config is left exactly as it was, so
+you never end up with a config describing a profile the `.app` on disk doesn't
+match. Pass `--force` to replace a running profile anyway.
+
+`set` *without* `--rebuild` deliberately defers: the change is recorded and
+applied by the next build. `list --json` reports that state as
+`"pending_rename": true`.
+
 Profiles can point at the **same** working folder if you configure a
 filesystem connector to the same path in each instance, so two accounts can
 work on the same files — just avoid both editing the same file at once.

@@ -599,14 +599,14 @@ def launch_profile(cfg, profile_id):
     prof = find_profile(cfg, profile_id)
     if not prof:
         print(f"No such profile: {profile_id}")
-        return
+        return False
     dest = built_bundle_path(cfg, prof)
     if not os.path.exists(dest):
         if not build_profile(cfg, prof):
             print("Build failed — not launching.")
-            return
+            return False
         dest = built_bundle_path(cfg, prof)
-    run(["open", "-n", dest], check=False)
+    return run(["open", "-n", dest], check=False).returncode == 0
 
 
 # -------------------------------------------------------------- crud verbs
@@ -617,38 +617,40 @@ def cmd_add(cfg, args):
         validate_name(args.name)
     except InvalidProfile as e:
         print(f"!! {e}")
-        return
+        return False
     if find_profile(cfg, args.id):
         print(f"Profile '{args.id}' already exists.")
-        return
+        return False
     # Store an absolute icon path: rebuilds run from the watcher's working
     # directory, not the one you typed the command in.
     icon = os.path.abspath(expand(args.icon)) if args.icon else None
     if icon and not os.path.isfile(icon):
         print(f"Icon not found: {icon}")
-        return
+        return False
     cfg["profiles"].append({"id": args.id, "name": args.name, "icon": icon})
     save_config(cfg)
     print(f"Added profile '{args.id}'. Building it now...")
-    if build_profile(cfg, find_profile(cfg, args.id)):
-        print("You'll be prompted to log in the first time you launch this profile.")
+    if not build_profile(cfg, find_profile(cfg, args.id)):
+        return False
+    print("You'll be prompted to log in the first time you launch this profile.")
+    return True
 
 
 def cmd_remove(cfg, args):
     prof = find_profile(cfg, args.id)
     if not prof:
         print(f"No such profile: {args.id}")
-        return
+        return False
     dest = built_bundle_path(cfg, prof)
     try:
         ensure_inside(dest, expand(cfg["profiles_dir"]), "bundle")
     except BuildError as e:
         print(f"!! {e}")
-        return
+        return False
     if os.path.exists(dest):
         if is_app_running(dest):
             print(f"!! '{args.id}' is running — quit it first.")
-            return
+            return False
         shutil.rmtree(dest)
     cfg["profiles"] = [p for p in cfg["profiles"] if p["id"] != args.id]
     save_config(cfg)
@@ -660,6 +662,7 @@ def cmd_remove(cfg, args):
         print(f"Removed profile '{args.id}' and deleted its login data.")
     else:
         print(f"Removed profile '{args.id}' (login data kept, in case you re-add it).")
+    return True
 
 
 def profile_status(cfg, prof):
@@ -690,6 +693,9 @@ def cmd_list(cfg, args):
                     "bundle_path": built_bundle_path(cfg, p),
                     "data_path": os.path.join(expand(cfg["data_dir"]), p["id"]),
                     "status": profile_status(cfg, p),
+                    # True when the config has been renamed but the .app hasn't
+                    # been rebuilt yet, i.e. `set --name` without --rebuild.
+                    "pending_rename": built_bundle_path(cfg, p) != bundle_path(cfg, p),
                 }
                 for p in cfg["profiles"]
             ],
@@ -704,49 +710,91 @@ def cmd_list(cfg, args):
 
 
 def cmd_set(cfg, args):
-    """Change a profile's name or icon. The rename only takes effect on the
-    next build, which is also what moves the .app bundle to its new path."""
+    """Change a profile's name or icon.
+
+    Without --rebuild the change is recorded and takes effect on the next
+    build (the rebuild is what moves the .app to its new path). With
+    --rebuild the whole operation is all-or-nothing: if the bundle can't be
+    replaced, the config is left exactly as it was, so a script never ends up
+    with a config describing a profile the .app on disk doesn't match."""
     prof = find_profile(cfg, args.id)
     if not prof:
         print(f"No such profile: {args.id}")
-        return
+        return False
+
+    # Resolve every new value before writing anything.
+    new_name = None
     if args.name:
         try:
             validate_name(args.name)
         except InvalidProfile as e:
             print(f"!! {e}")
-            return
-        prof["name"] = args.name
-    if args.icon is not None:
-        if args.icon == "":
-            prof["icon"] = None
-        else:
-            icon = os.path.abspath(expand(args.icon))
-            if not os.path.isfile(icon):
-                print(f"Icon not found: {icon}")
-                return
-            prof["icon"] = icon
+            return False
+        new_name = args.name
+
+    icon_given = args.icon is not None
+    new_icon = None
+    if icon_given and args.icon != "":
+        icon = os.path.abspath(expand(args.icon))
+        if not os.path.isfile(icon):
+            print(f"Icon not found: {icon}")
+            return False
+        new_icon = icon
+
+    if new_name is None and not icon_given:
+        print("Nothing to change: pass --name and/or --icon.")
+        return False
+
+    # Catch the common case before touching the config at all.
+    if args.rebuild and not args.force:
+        target = built_bundle_path(cfg, prof)
+        if os.path.exists(target) and is_app_running(target):
+            print(f"!! '{args.id}' is running — nothing was changed. Quit it "
+                  f"and try again, or pass --force.")
+            return False
+
+    previous_name = prof["name"]
+    previous_icon = prof.get("icon")
+
+    if new_name is not None:
+        prof["name"] = new_name
+    if icon_given:
+        prof["icon"] = new_icon
     save_config(cfg)
     print(f"Updated profile '{args.id}'.")
-    if args.rebuild:
-        build_profile(cfg, prof, args.force)
+
+    if not args.rebuild:
+        if new_name is not None:
+            print("  the rename takes effect on the next build")
+        return True
+
+    if build_profile(cfg, prof, args.force):
+        return True
+
+    # The build failed, and builds are staged and swapped, so the installed
+    # bundle was never touched. Undo the config change so the two agree.
+    prof["name"] = previous_name
+    prof["icon"] = previous_icon
+    save_config(cfg)
+    print(f"  reverted the change to '{args.id}' — nothing was modified.")
+    return False
 
 
 def cmd_build(cfg, args):
     if args.all:
-        build_all(cfg, args.force)
-    elif args.id:
+        return build_all(cfg, args.force)
+    if args.id:
         prof = find_profile(cfg, args.id)
         if not prof:
             print(f"No such profile: {args.id}")
-            return
-        build_profile(cfg, prof, args.force)
-    else:
-        print("Specify --id <profile> or --all")
+            return False
+        return build_profile(cfg, prof, args.force)
+    print("Specify --id <profile> or --all")
+    return False
 
 
 def cmd_launch(cfg, args):
-    launch_profile(cfg, args.id)
+    return launch_profile(cfg, args.id)
 
 
 def cmd_watch(cfg, args):
@@ -830,7 +878,10 @@ def main():
 
     args = parser.parse_args()
     cfg = load_config()
-    args.func(cfg, args)
+    # Commands return False when they didn't do what was asked, so scripts can
+    # branch on the exit status. `watch` never returns.
+    if args.func(cfg, args) is False:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

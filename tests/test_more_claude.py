@@ -465,6 +465,109 @@ class ConfigTests(EngineTestCase):
         self.assertIn("not valid JSON", str(code))
 
 
+class ScriptingTests(EngineTestCase):
+    """`set --rebuild` has to be all-or-nothing, and failures have to be
+    visible in the exit status — a script can't see stdout."""
+
+    def config_bytes(self):
+        with open(self.config_path, "rb") as f:
+            return f.read()
+
+    def test_set_rebuild_on_a_running_profile_changes_nothing(self):
+        self.engine("add", "--id", "work", "--name", "Claude Work")
+        before = self.config_bytes()
+
+        original = mc.is_app_running
+        mc.is_app_running = lambda path: True
+        self.addCleanup(lambda: setattr(mc, "is_app_running", original))
+
+        output, code = self.engine(
+            "set", "--id", "work", "--name", "Claude Renamed", "--rebuild")
+        mc.is_app_running = original
+
+        self.assertEqual(code, 1)
+        self.assertIn("nothing was changed", output)
+        self.assertEqual(self.config_bytes(), before, "config was modified")
+        self.assertTrue(os.path.isdir(self.bundle("Claude Work")))
+
+    def test_set_rebuild_rolls_back_when_the_build_fails(self):
+        """The bundle is staged and swapped, so a failed build leaves it
+        untouched — the config has to be put back to match."""
+        self.engine("add", "--id", "work", "--name", "Claude Work")
+        before = self.config_bytes()
+
+        original = mc.sign_bundle
+        mc.sign_bundle = lambda *a, **k: (_ for _ in ()).throw(
+            mc.BuildError("simulated failure"))
+        self.addCleanup(lambda: setattr(mc, "sign_bundle", original))
+
+        output, code = self.engine(
+            "set", "--id", "work", "--name", "Claude Renamed", "--rebuild")
+        mc.sign_bundle = original
+
+        self.assertEqual(code, 1)
+        self.assertIn("reverted", output)
+        self.assertEqual(self.config_bytes(), before, "config was left changed")
+        self.assertTrue(os.path.isdir(self.bundle("Claude Work")))
+
+    def test_set_with_force_applies_while_running(self):
+        self.engine("add", "--id", "work", "--name", "Claude Work")
+
+        original = mc.is_app_running
+        mc.is_app_running = lambda path: True
+        self.addCleanup(lambda: setattr(mc, "is_app_running", original))
+        output, code = self.engine("set", "--id", "work", "--name", "Claude Forced",
+                                   "--rebuild", "--force")
+        mc.is_app_running = original
+
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isdir(self.bundle("Claude Forced")))
+        self.assertFalse(os.path.exists(self.bundle("Claude Work")))
+
+    def test_set_without_rebuild_defers_and_is_reported(self):
+        self.engine("add", "--id", "work", "--name", "Claude Work")
+        output, code = self.engine("set", "--id", "work", "--name", "Claude Later")
+
+        self.assertEqual(code, 0)
+        self.assertIn("takes effect on the next build", output)
+        self.assertTrue(os.path.isdir(self.bundle("Claude Work")))
+
+        listing, _ = self.engine("list", "--json")
+        profile = json.loads(listing)["profiles"][0]
+        self.assertEqual(profile["name"], "Claude Later")
+        self.assertTrue(profile["pending_rename"])
+
+        self.engine("build", "--id", "work")
+        listing, _ = self.engine("list", "--json")
+        self.assertFalse(json.loads(listing)["profiles"][0]["pending_rename"])
+
+    def test_failures_exit_nonzero(self):
+        for argv in (
+            ("build", "--id", "nope"),
+            ("set", "--id", "nope", "--name", "X"),
+            ("remove", "--id", "nope"),
+            ("launch", "--id", "nope"),
+            ("add", "--id", "bad/id", "--name", "X"),
+            ("set", "--id", "nope"),
+        ):
+            with self.subTest(argv=argv):
+                _, code = self.engine(*argv)
+                self.assertEqual(code, 1, f"{argv} should have exited 1")
+
+    def test_successes_exit_zero(self):
+        for argv in (
+            ("add", "--id", "work", "--name", "Claude Work"),
+            ("list",),
+            ("list", "--json"),
+            ("build", "--id", "work"),
+            ("set", "--id", "work", "--name", "Claude Two", "--rebuild"),
+            ("remove", "--id", "work"),
+        ):
+            with self.subTest(argv=argv):
+                _, code = self.engine(*argv)
+                self.assertEqual(code, 0, f"{argv} should have exited 0")
+
+
 class ListingTests(EngineTestCase):
 
     def test_json_listing_shape(self):
